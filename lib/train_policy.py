@@ -2,7 +2,7 @@ import numpy as np
 from stable_baselines.ddpg.noise import OrnsteinUhlenbeckActionNoise
 from stable_baselines import DDPG
 
-def train_policy_ddpg(env,policy,policy_args,total_timesteps):
+def train_policy_ddpg(env,policy,policy_args,total_timesteps,verbose=0,actor_lr=.5, critic_lr=.001):
     """
     Parameters
     ----------
@@ -16,7 +16,8 @@ def train_policy_ddpg(env,policy,policy_args,total_timesteps):
     param_noise = None
     action_noise = OrnsteinUhlenbeckActionNoise(mean=np.zeros(n_actions), sigma=float(0.5) * np.ones(n_actions))
 
-    model = DDPG(policy, env, verbose=0, param_noise=param_noise, action_noise=action_noise, policy_kwargs=policy_args)
+    model = DDPG(policy, env, verbose=verbose, param_noise=param_noise, action_noise=action_noise, policy_kwargs=policy_args,
+                actor_lr = actor_lr, critic_lr = critic_lr)
     model.learn(total_timesteps)
     return model
 

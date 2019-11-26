@@ -18,8 +18,9 @@ def main():
     
     # specify training details to loop over
     archs = [[64], [64,64], [64,64,64], [128], [128, 128], [128,128,128], [300], [300,300]]
-    traj_lens = [2,5,10,20]
+    traj_lens = [5,10,20]
     param_lists = [archs, traj_lens]
+    traj_type="drive"
     
     i = job_iter
     tup = list(itertools.product(*param_lists))[i]
@@ -40,7 +41,7 @@ def main():
 
     widths = parameters["widths"]
     traj_len = parameters["traj_len"]
-    save_dir = "./experiments/state_rep_params/pendulum/{}".format(i)
+    save_dir = "./experiments/state_rep_params/pendulum/{}".format(i+32)
     n_episodes = parameters["n_episodes"]
     n_passes = parameters["n_passes"]
     batch_size = parameters["batch_size"]
@@ -58,6 +59,7 @@ def main():
 
     projectors,weights,biases,losses = train_encoder(env, start_states, start_actions, traj_len, n_passes, 
                                                      state_dim, act_dim, widths,
+                                                     traj_type=traj_type,
                                                      learning_rate=learning_rate,
                                                      init_projectors=init_projectors,
                                                      init_weights=init_weights,

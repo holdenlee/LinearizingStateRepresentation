@@ -60,7 +60,10 @@ class RestartablePendulumEnv(gym.Env):
     def _get_obs(self):
         theta, thetadot = self.state
         return np.array([np.cos(theta), np.sin(theta), thetadot])
-
+    
+    def _get_state(self):
+        return self.state
+    
     def render(self, mode='human'):
 
         if self.viewer is None:

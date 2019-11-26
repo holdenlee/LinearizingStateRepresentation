@@ -98,44 +98,77 @@ def projectors(shape,num_projectors,dist,scale,first_guess):
                                          scale=scale,first_guess=first_guess))
     return projectors
 
-def get_trajectory(env,start_state,action,traj_len, drive=False):
+def get_trajectory(env,start_state,action,traj_len, traj_type = "general", drift_action=[0]):
     """
     Parameters
     ----------
     env : openai gym environment
     start_state : ndarray of proper shape to specify the starting state of the environment
-    action : ndarray of shape appropriate for environment action
+    action : ndarray of shape appropriate for environment action (or list of such arrays)
     traj_len : integer, specifies how many steps to collect
-    drive : boolean, optional, specifies whether to drive the environment or let drift after initial action
+    traj_type : string, optional
+        Specifies how to generate the trajectory
+        "initial" -- take the action initially, then let drift
+        "drive" -- take the same action each time
+        "general" -- action in this case is a list of actions, take each one per timestep
+        "initial_terminal" -- action in this case is two actions, take the first initially, 
+            then let drift and finally take the second at the last step
     
     Returns
     -------
     X : ndarray of shape (traj_len, obs_dim)
         The observations from the resulting trajectory
-    D : ndarray of shape (traj_len, obs_dim)
+    D : ndarray of shape (traj_len, obs_dim) (optionally)
         The corresponding drift trajectory
     """
-    obs_dim = len(env.reset(start_state))
-    X = np.empty((traj_len, obs_dim))
-    D = np.empty((traj_len, obs_dim))
-    
-    # collect trajectory with action
-    obs, rew, done, _ = env.step(action)
-    X[0] = obs
-    for j in range(traj_len-1):
-        if drive:
-            obs, rew, done, _ = env.step(action)
-        else:
-            obs, rew, done, _ = env.step([0])
-        X[j+1] = obs
-        
-    # trajectory with drift
-    env.reset(start_state)
-    for i in range(traj_len):
-        obs, rew, done, _  = env.step([0])
-        D[i] = obs
-    
-    return X, D
+    if traj_type in ["initial", "drive"]:
+        drive = traj_type=="drive"
+        obs_dim = len(env.reset(state = start_state))
+        X = np.empty((traj_len, obs_dim))
+        D = np.empty((traj_len, obs_dim))
+
+        # collect trajectory with action
+        obs, rew, done, _ = env.step(action)
+        X[0] = obs
+        for j in range(traj_len-1):
+            if drive:
+                obs, rew, done, _ = env.step(action)
+            else:
+                obs, rew, done, _ = env.step(drift_action)
+            X[j+1] = obs
+
+        # trajectory with drift
+        env.reset(start_state)
+        for i in range(traj_len):
+            obs, rew, done, _  = env.step(drift_action)
+            D[i] = obs
+
+        return X, D
+    elif traj_type == "general": #TODO: reset it in the intended start state
+        obs_dim = len(env.reset(state = start_state))
+        X = np.empty((traj_len+1, obs_dim))
+        X[0] = start_state
+        # collect trajectory with action
+        obs, rew, done, _ = env.step(action[0])
+        X[1] = obs
+        for j in range(traj_len-1):
+            obs, rew, done, _ = env.step(action[j+1])
+            X[j+2] = obs
+        return X
+    elif traj_type == "initial_terminal":
+        obs_dim = len(env.reset(state = start_state))
+        X = np.empty((traj_len+1, obs_dim))
+        X[0] = start_state
+        # collect trajectory with action
+        obs, rew, done, _ = env.step(action[0])
+        X[1] = obs
+        for j in range(traj_len-1):
+            if j < traj_len-1:
+                obs, rew, done, _ = env.step(drift_action)
+            else:
+                obs, rew, done, _ = env.step(action[-1])
+            X[j+2] = obs
+        return X
 
 def trajectory_loss(X_enc,D_enc,action,P):
     """
@@ -161,6 +194,34 @@ def trajectory_loss(X_enc,D_enc,action,P):
         losses.append(err)
     return sum(losses)/len(P) 
 
+def general_trajectory_loss(X_enc,actions,P,T):
+    """
+    Return the loss for an encoded trajectory.
+    
+    Parameters
+    ----------
+    X : shape (traj_len+1, enc_dim)
+        The observations from the resulting trajectory
+    actions : shape (traj_len,act_dim)
+    P : list of length traj_len+1, each element of shape (act_dim,enc_dim),
+        The last element is the fixed Projector applied to the observed state
+    T : list of length traj_len-1, each element of shape (act_dim,act_dim)
+    
+    Returns
+    -------
+    average coordinate-wise squared error prediction loss
+    """
+    losses = []
+    for i in range(len(P)-1): # predict the action
+        proj_xi = tf.matmul(P[-1],tf.expand_dims(X_enc[i+1],-1))
+        proj_x0 = tf.matmul(P[i],tf.expand_dims(X_enc[0],-1))
+        proj_acts = sum([tf.matmul(T[i-j-1],tf.expand_dims(actions[j],-1)) for j in range(i-1)])
+        pred_action = proj_xi-proj_x0-proj_acts
+        err = tf.reduce_mean(tf.reduce_sum(tf.squared_difference(pred_action,action[i])))
+        losses.append(err)
+    return sum(losses)/len(P) 
+
+
 def encode_block(block,weights,biases):
     """
     Apply the neural network encoder to a block of data columnwise.
@@ -177,9 +238,14 @@ def encode_block(block,weights,biases):
 def train_encoder(env,start_states, start_actions, traj_len, n_passes, 
                   state_dim, act_dim,widths,
                   learning_rate=1e-3,
-         init_projectors=None,init_weights=None,init_biases=None,batch_size = 100,save_dir="",
-                 show_progress=True,
-                 track_loss_every=1):
+                  traj_type="initial",
+                  init_projectors=None,
+                  init_weights=None,
+                  init_biases=None,
+                  batch_size = 100,
+                  save_dir="",
+                  show_progress=True,
+                  track_loss_every=1):
     """
     Use tensorflow to train the parameters of an encoder by minimizing trajectory loss.
     """
@@ -253,7 +319,7 @@ def train_encoder(env,start_states, start_actions, traj_len, n_passes,
                 
                 batch_inds = samples[j:j+batch_size]
                 actions = [start_actions[ind] for ind in batch_inds]
-                eps = [get_trajectory(env,start_states[ind],start_actions[ind],traj_len)
+                eps = [get_trajectory(env,start_states[ind],start_actions[ind],traj_len,traj_type=traj_type)
                       for ind in batch_inds]
                 
                 feed_dict = {d : i for d, i in zip(input_act_batch, actions)}
@@ -269,4 +335,106 @@ def train_encoder(env,start_states, start_actions, traj_len, n_passes,
                 losses.append(avg_loss/(j%track_loss_every + 1))
     return [v.eval(sess) for v in projector_vars], [v.eval(sess) for v in weight_vars], [v.eval(sess) for v in bias_vars], losses[1:]
 
+def train_general_encoder(env,start_states, action_seqs, traj_len, n_passes, 
+                  state_dim, act_dim,widths,
+                  learning_rate=1e-3,
+                  traj_type="general",
+                  init_projectors=None, 
+                  init_T=None,
+                  init_weights=None,
+                  init_biases=None,
+                  batch_size = 100,
+                  save_dir="",
+                  show_progress=True,
+                  track_loss_every=1):
+    """
+    Use tensorflow to train the parameters of an encoder by minimizing trajectory loss.
+    """
+    
+    
+    n_episodes = len(start_states)
+    
+    # tensorflow boilerplate
+    config = tf.ConfigProto(
+        allow_soft_placement=True,
+    )
+    config.gpu_options.allow_growth = True
+    sess = tf.Session(config=config)
+    
+    # initialize variables, which are the network weights and biases as well as projectors 
+    widths = [state_dim]+widths
+    dist_weights=["dl"]*(len(widths)-1)
+    scale=None
+    first_guess=None
+    dist_biases=[None]*(len(widths)-1)
+    
+    if init_P is None:
+        P_vars = projectors((act_dim,widths[-1]),traj_len+1,"dl",scale,first_guess)
+    else:
+        P_vars = [tf.Variable(tf.convert_to_tensor(proj),dtype=tf.float64) for proj in init_P]
+    
+    if init_T is None:
+        T_vars = projectors((act_dim,act_dim), traj_len-1, "dl", scale, first_guess)
+    else:
+        T_vars = [tf.Variable(tf.convert_to_tensor(T),dtype=tf.float64) for T in init_T]
+    
+    if init_weights is None:
+        weight_vars, bias_vars = encoder(widths, dist_weights, dist_biases, scale, first_guess)
+    else:
+        weight_vars = [tf.Variable(tf.convert_to_tensor(wt),dtype=tf.float64) for wt in init_weights]
+        bias_vars = [tf.Variable(tf.convert_to_tensor(bs),dtype=tf.float64) for bs in init_biases]
+        
+    
+    with sess.as_default():
+        # train on batch of trajectories at a time
+        # placeholder for data from a batch of trajectories
+        input_trajectory_batch = [tf.placeholder(tf.float64, shape=[traj_len+1,state_dim]) for _ in range(batch_size)]
+        input_act_batch = [tf.placeholder(tf.float64, shape=[traj_len,act_dim]) for _ in range(batch_size)]
+        
+        # encode the batch of trajectories and drifts
+        X_enc = [tf.transpose(encode_block(tf.transpose(b),weight_vars,bias_vars)) for b in input_trajectory_batch]
+        
+        # create the batch loss
+        loss = sum([general_trajectory_loss(x_enc,act,P_vars,T_vars) for x_enc,act in zip(X_enc,input_act_batch)])/batch_size
+        
+        # create the minimizer
+        global_step = tf.Variable(0,name='global_step', trainable=False)
+        optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate) # traditionally have chosen learning_rate=1e-3
+        train_op = optimizer.minimize(loss, global_step)
+            
+        sess.run(tf.global_variables_initializer())
+        
+        losses = []
+        
+        track_loss_every = max(1,track_loss_every)
+         
+        for p in range(n_passes):
+       
+            if show_progress:
+                print("\nEpoch {}\n".format(p))
+            
+            samples = np.random.permutation(n_episodes)
+            avg_loss = 0
+            for j in range(int(n_episodes/batch_size)):
+                if (j%track_loss_every)==0:
+                    losses.append(avg_loss/track_loss_every)
+                    avg_loss = 0
+                
+                batch_inds = samples[j:j+batch_size]
+                actions = [action_seqs[ind] for ind in batch_inds]
+                initstates = [start_states[ind] for ind in batch_inds]
+                eps = [get_trajectory(env,start_states[ind],action_seqs[ind],traj_len,traj_type=traj_type)
+                      for ind in batch_inds]
+                
+                feed_dict = {d : i for d, i in zip(input_act_batch, actions)}
+                feed_dict.update({d : i for d, i in zip(input_trajectory_batch,eps)})
+                
+                _, loss_val, step = sess.run([train_op, loss, global_step], feed_dict=feed_dict)
+                #losses.append(loss_val)
+                avg_loss += loss_val
+                if show_progress:
+                    print("Epoch Completion: {0:.3f}%, Loss: {1}".format(100*j*batch_size/n_episodes,loss_val),end="\r",flush=True)
+            if (j%track_loss_every) > 0:
+                losses.append(avg_loss/(j%track_loss_every + 1))
+    return [v.eval(sess) for v in projector_vars], [v.eval(sess) for v in weight_vars], [v.eval(sess) for v in bias_vars], losses[1:]
 
