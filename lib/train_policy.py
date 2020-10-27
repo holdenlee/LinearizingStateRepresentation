@@ -1,6 +1,7 @@
 import numpy as np
 from stable_baselines.ddpg.noise import OrnsteinUhlenbeckActionNoise
 from stable_baselines import DDPG
+from stable_baselines.ppo2 import PPO2
 
 def train_policy_ddpg(env,policy,policy_args,total_timesteps,verbose=0,actor_lr=.5, critic_lr=.001):
     """
@@ -18,6 +19,7 @@ def train_policy_ddpg(env,policy,policy_args,total_timesteps,verbose=0,actor_lr=
 
     model = DDPG(policy, env, verbose=verbose, param_noise=param_noise, action_noise=action_noise, policy_kwargs=policy_args,
                 actor_lr = actor_lr, critic_lr = critic_lr)
+    #model = PPO2(policy, env)
     model.learn(total_timesteps)
     return model
 
