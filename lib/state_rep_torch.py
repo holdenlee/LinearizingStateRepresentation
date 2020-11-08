@@ -486,13 +486,10 @@ class ConvEncoderNet(nn.Module):
         return int(np.floor((s_in-kern)/stride+1))
     
     def forward(self, x):
-        #z = F.relu(self.conv1(x))
-        #z = F.relu(self.conv2(z))
         z = self.sigma(self.conv1(x))
         z = self.sigma(self.conv2(z))
         z = z.view(-1, self.size)
         for layer in self.layers[:-1]:
-            #z = F.relu(layer(z))
             z = self.sigma(layer(z))
            
         return self.layers[-1](z)
@@ -509,7 +506,7 @@ class ForwardInverseNet(nn.Module):
         self.P = nn.Linear(enc_dim,act_dim,bias=False) # projection matrix, maps state to action
         self.L = nn.Linear(enc_dim,act_dim,bias=False) # projection matrix, state to action
 
-    def forward_loss(self,batch,method):
+    def forward_loss(self,batch):
         """
         batch : list/tuple of 3 tensors, corresponding to X1, X0, and U
         """
@@ -519,7 +516,7 @@ class ForwardInverseNet(nn.Module):
         state_pred = self.A(X0) + self.B(U)
         return (((X1-state_pred)**2).sum()/self.enc_dim)/X1.shape[0]
     
-    def inverse_loss(self,batch,method):
+    def inverse_loss(self,batch):
         X1, X0, U = batch
         X1 = self.encoder(X1)
         X0 = self.encoder(X0)
@@ -536,7 +533,7 @@ class ForwardNet(nn.Module):
         self.A = nn.Linear(enc_dim,enc_dim,bias=False) # drift matrix, maps state to state
         self.B = torch.eye(enc_dim)[:act_dim,:]
         
-    def forward_loss(self,batch,method):
+    def forward_loss(self,batch):
         """
         batch : list/tuple of 3 tensors, corresponding to X1, X0, and U
         """
@@ -690,10 +687,7 @@ class PredictorNet(nn.Module):
     
 def train_encoder(predNet, # pytorch Module-style object, encodes states and computes loss
                   traj_sampler, # object that produces batches of trajectories
-                  T, # length of trajectory
                   n_episodes, # how many batches of trajectories to train on
-                  traj_method, # specifies what kind of trajectory to generate
-                  loss_method, # specifies what loss function to use
                   lr=1e-3, #learning rate for optimizer
                   batch_size = 50,
                   show_progress=True,
@@ -712,8 +706,6 @@ def train_encoder(predNet, # pytorch Module-style object, encodes states and com
     optimizer = optim.Adam(predNet.parameters(),lr=lr)
     losses = []
     running_loss = 0.0
-    running_floss = 0.0
-    running_iloss = 0.0
     n_passes = 0
     
     if passes is not None:
@@ -741,7 +733,7 @@ def train_encoder(predNet, # pytorch Module-style object, encodes states and com
         #iloss = predNet.inverse_loss(traj_batch,loss_method)
         #lam = .01 # .05 worked a couple times
         #loss = lam*floss + (1-lam)*iloss
-        loss = predNet.forward_loss(traj_batch,loss_method)
+        loss = predNet.forward_loss(traj_batch)
         loss.backward()
         optimizer.step()
 
@@ -752,19 +744,14 @@ def train_encoder(predNet, # pytorch Module-style object, encodes states and com
         if ((i+1)%track_loss_every) == 0:
             norms = [la.norm(p.detach().numpy()) for p in predNet.parameters()][-1]
             if show_progress:
-                print("Epoch Completion: {0:.3f}%, Loss: {1:.3f}, FLoss: {2:.3f}, ILoss: {3:.3f}, Norms: {4}".format(100*(i+1)/n_episodes, running_loss/track_loss_every, running_floss/track_loss_every, running_iloss/track_loss_every, norms),
+                print("Epoch Completion: {0:.3f}%, Loss: {1:.3f}".format(100*(i+1)/n_episodes, running_loss/track_loss_every),
                       end="\r",flush=True)
             losses.append(running_loss/track_loss_every)
             running_loss = 0.0
-            running_floss = 0.0
-            running_iloss = 0.0
+            
         if ((i+1)%save_every) == 0:
             torch.save(predNet,save_path+"_{}net".format((i+1)/save_every))
-            #np.savetxt(save_path+"losses.txt",np.array(losses))
-            #plt.plot(losses)
-            #plt.savefig(save_path + "losses.png")
-            #plt.clf()
-    
+            
                     
                  
                     
