@@ -10,7 +10,7 @@ def main():
     
     for arg in sys.argv:
         if arg.startswith('--job='):
-            job_iter = int(arg.split('--job=')[1]) - 1
+            i = int(arg.split('--job=')[1])-1
     
     # specify environment information
     env = RestartablePendulumEnv()
@@ -18,25 +18,35 @@ def main():
     act_dim = 1
     
     # specify training details to loop over
-    archs = [[state_dim]+arch for arch in [[64], [64,64], [64,64,64], [128], [128, 128], [128,128,128], [300], [300,300]]]
-    traj_lens = [2,5,10,20]
-    param_lists = [archs, traj_lens]
+    jobs = [2, 5, 6, 8, 9, 10, 13, 20, 24, 28, 32]
+    archs = [[state_dim]+arch for arch in [[128],
+                                           [256],
+                                           [512],
+                                           [1024],
+                                           [128,128],
+                                           [256,256],
+                                           [512,512],
+                                           [512,256],
+                                           [512,128]
+                                          ]]
+    traj_lens = [20]
+    lrs = [.0001, .0005, .001, .005]
+    param_lists = [archs, traj_lens, lrs]
     
     
-    i = job_iter
-    tup = list(itertools.product(*param_lists))[job_iter]
+    tup = list(itertools.product(*param_lists))[jobs[i]]
     
     parameters = {
-        "n_episodes" :5000,
+        "n_episodes" :30000,
         "batch_size" : 50,
-        "learning_rate" : 1e-3,
+        "learning_rate" : tup[2],
         "widths" : tup[0],
         "traj_len" : tup[1]
     }
 
     widths = parameters["widths"]
     traj_len = parameters["traj_len"]
-    save_dir = "./experiments/deep_dive/model_43_dive/{}".format(i)
+    save_dir = "./experiments/extra_train_exps/{}".format(i)
     n_episodes = parameters["n_episodes"]
     batch_size = parameters["batch_size"]
     learning_rate = parameters["learning_rate"]    

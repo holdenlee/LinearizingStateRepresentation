@@ -23,7 +23,7 @@ def main():
             i = int(arg.split('--job=')[1]) - 1
     
     # pull in the encoder params
-    p_dir =  "./experiments/deep_dive/model_43_dive/{}".format(i)
+    p_dir =  "./experiments/extra_train_exps/{}".format(i)
     proj = np.load(p_dir+"projectors.npz")
     proj = np.row_stack([v for k,v in proj.items()])
     proj = la.svd(proj,full_matrices=False)[2]
@@ -34,7 +34,7 @@ def main():
     biases = [v for k,v in biases.items()]
     
     
-    saveload_path = "./experiments/deep_dive/model_43_dive/{}".format(i)
+    saveload_path = "./experiments/extra_train_exps/{}".format(i)
     
     
     

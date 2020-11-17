@@ -28,7 +28,8 @@ encnet = srt.ConvEncoderNet(layers,env.observation_space.shape[1:],sigma=nonlin)
 #prednet = srt.PredictorNet(encnet,T,layers[-1],1)
 #deterministic_args = (samples[i], batch_size, 35, method, n_repeats,T) 
 
-prednet = srt.ForwardNet(encnet,layers[-1],1)
+#prednet = srt.ForwardNet(encnet,layers[-1],1)
+prednet = srt.PiecewiseForwardNet(encnet,layers[-1],1,2)
 deterministic_args = None 
 
 traj_sampler = srt.SimpleTrajectorySampler(env,

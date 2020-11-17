@@ -543,7 +543,32 @@ class ForwardNet(nn.Module):
         state_pred = self.A(X0) + torch.matmul(U,self.B)
         return (((X1-state_pred)**2).sum()/self.enc_dim)/X1.shape[0]
        
+
+class PiecewiseForwardNet(nn.Module):
+    def __init__(self, encoder, enc_dim, act_dim, k):
+        super(PiecewiseForwardNet, self).__init__()
+        self.encoder = encoder
+        self.act_dim = act_dim
+        self.enc_dim = enc_dim
+        self.k = k
+        self.Alist = nn.ModuleList([nn.Linear(enc_dim,enc_dim,bias=False) for i in range(k)])
+        self.Blist = nn.ModuleList([nn.Linear(act_dim,enc_dim,bias=False) for i in range(k)])
+        self.C = nn.Linear(enc_dim,k) # used to decide which linear model is active
     
+    def forward_loss(self,batch):
+        X1, X0, U = batch
+        X1 = self.encoder(X1)
+        X0 = self.encoder(X0)
+        inds = torch.argmax(self.C(X0),axis=1)
+        loss = 0
+        for i in range(self.k):
+            class_inds = inds==i
+            if True in class_inds:
+                pred = self.Alist[i](X0[class_inds]) + self.Blist[i](U[class_inds])
+                loss += ((X1[class_inds] - pred)**2).sum()
+        return loss/(self.enc_dim*X1.shape[0])
+                
+
 class PredictorNet(nn.Module):
     """
     PyTorch Module object that implements the loss functions for state representation learning.
