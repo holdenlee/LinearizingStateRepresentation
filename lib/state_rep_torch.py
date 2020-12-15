@@ -551,8 +551,10 @@ class PiecewiseForwardNet(nn.Module):
         self.act_dim = act_dim
         self.enc_dim = enc_dim
         self.k = k
-        self.Alist = nn.ModuleList([nn.Linear(enc_dim,enc_dim,bias=False) for i in range(k)])
-        self.Blist = nn.ModuleList([nn.Linear(act_dim,enc_dim,bias=False) for i in range(k)])
+        self.A0 = nn.Linear(enc_dim,enc_dim,bias=False)
+        self.B0 = torch.eye(enc_dim)[:act_dim,:]
+        self.Alist = nn.ModuleList([nn.Linear(enc_dim,enc_dim,bias=False) for i in range(k-1)])
+        self.Blist = nn.ModuleList([nn.Linear(act_dim,enc_dim,bias=False) for i in range(k-1)])
         self.C = nn.Linear(enc_dim,k) # used to decide which linear model is active
     
     def forward_loss(self,batch):
@@ -561,8 +563,12 @@ class PiecewiseForwardNet(nn.Module):
         X0 = self.encoder(X0)
         inds = torch.argmax(self.C(X0),axis=1)
         loss = 0
-        for i in range(self.k):
-            class_inds = inds==i
+        class_inds = inds==0
+        if True in class_inds:
+            pred = self.A0(X0[class_inds]) + torch.matmul(U[class_inds],self.B0)
+            loss += ((X1[class_inds] - pred)**2).sum()
+        for i in range(self.k-1):
+            class_inds = inds==i+1
             if True in class_inds:
                 pred = self.Alist[i](X0[class_inds]) + self.Blist[i](U[class_inds])
                 loss += ((X1[class_inds] - pred)**2).sum()
