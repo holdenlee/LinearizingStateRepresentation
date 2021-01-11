@@ -30,9 +30,8 @@ class RestartablePendulumEnv(gym.Env):
             
         else:
             self.reset()
-            high = np.array([1., 1., self.max_speed])
+            high = np.array(repeats*[1., 1., self.max_speed])
             self.observation_space = spaces.Box(low=-high, high=high, dtype=np.float32)
-            
         
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
@@ -94,7 +93,13 @@ class RestartablePendulumEnv(gym.Env):
         if len(multiobs)==1:
             return multiobs[0]
         else:
-            return np.concatenate(multiobs,axis=1)
+            return np.concatenate(multiobs,axis=-1)
+            #if len(multiobs[0].shape)>1:
+            #    #doesn't work for multiobs, because actual shape should be 3*repeats
+            #    return np.concatenate(multiobs,axis=1)
+            #else:
+            #    return np.concatenate(multiobs,axis=0)
+            #    #return np.vstack(multiobs)
     
     def _get_obs(self):
         if self.pixels:
