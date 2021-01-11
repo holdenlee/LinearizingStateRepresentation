@@ -217,7 +217,8 @@ class SimpleTrajectorySampler():
     """
     def __init__(self,env,action_sampler,state_sampler,device=torch.device('cpu'),
                  deterministic=False,
-                 deterministic_args = None):
+                 deterministic_args = None,
+                 output_rewards = False):
         self.env = env
         self.action_sampler = action_sampler
         self.state_sampler = state_sampler
@@ -226,6 +227,7 @@ class SimpleTrajectorySampler():
         self.state_shape = state_sampler(1).shape[1:]
         self.act_shape = action_sampler(1).shape[1:]
         self.device = device
+        self.output_rewards = output_rewards
         
         if deterministic:
             print("\ngenerating dataset...\n")
@@ -235,20 +237,27 @@ class SimpleTrajectorySampler():
             print("total samples used: {}".format(n_large_batches*batch_size*largeT*repeats))
             self.batches = []
             for _ in range(n_large_batches):
-                X,U = self.get_new_batch(batch_size,largeT)
-                self.batches.extend([(X[i+1],X[i],U[i]) for i in range(len(U))])
+                if self.output_rewards:
+                    X,U,R = self.get_new_batch(batch_size,largeT)
+                    self.batches.extend([(X[i+1],X[i],U[i],R[i]) for i in range(len(U))])
+                else: 
+                    X,U = self.get_new_batch(batch_size,largeT)
+                    self.batches.extend([(X[i+1],X[i],U[i]) for i in range(len(U))])
             np.random.shuffle(self.batches)
             self.n_batches = len(self.batches)
             print("done with {} batches...\n".format(self.n_batches))
             self.batch_index = 0
- 
     
     
     def get_new_batch(self,batch_size,T):
         """
         sample a fresh batch from the environment.
         """
-        return self._full_batch(batch_size,T)
+        batch = self._full_batch(batch_size,T)
+        if self.output_rewards:
+            return batch
+        else:
+            return batch[0:2]
         
         
     def get_batch(self,batch_size,T,method):
@@ -269,26 +278,30 @@ class SimpleTrajectorySampler():
             # maybe reshuffle the data after each pass
             return batch
     
+    #note: not a private method
     def _forward_batch(self,batch_size):
         S0 = self.state_sampler(batch_size)
         U = self.action_sampler(batch_size)
         X1 = np.empty((batch_size,*self.obs_shape))
         X0 = np.empty((batch_size,*self.obs_shape))
+        R = np.empty(batch_size)
         for j in range(batch_size):
             X0[j,:] = self.env.reset(state=S0[j])
-            X1[j,:] = self.env.step(U[j])[0]
-        return [torch.from_numpy(T).float().to(self.device) for T in [X1, X0, U]]
+            X1[j,:], R[j], _, _ = self.env.step(U[j])
+        return [torch.from_numpy(T).float().to(self.device) for T in ([X1, X0, U, R] if self.output_rewards else [X1,X0,U])]
     
     def _full_batch(self,batch_size,T):
         X_list = [np.empty((batch_size,*self.obs_shape)) for _ in range(T+1)]
         X0 = self.state_sampler(batch_size)
         U_list = [self.action_sampler(batch_size) for _ in range(T)]
+        r_list = [np.empty(batch_size) for _ in range(T)]
         for j in range(batch_size):
             X_list[0][j,:] = self.env.reset(state=X0[j])
             for i in range(T):
-                X_list[i+1][j,:] = self.env.step(U_list[i][j])[0]
+                X_list[i+1][j,:], r_list[i][j], _, _ = self.env.step(U_list[i][j])
         return ([torch.from_numpy(X).float().to(self.device) for X in X_list], 
-                [torch.from_numpy(U).float().to(self.device) for U in U_list])        
+                [torch.from_numpy(U).float().to(self.device) for U in U_list],
+                [torch.from_numpy(r).float().to(self.device) for r in r_list])        
           
     
 class TrajectorySampler():
@@ -446,8 +459,9 @@ class EncoderNet(nn.Module):
         
     def forward(self, x):
         z = x
-        for layer in self.layers:
+        for layer in self.layers[:-1]:
             z = F.relu(layer(z))
+        z = self.layers[-1](z) #do not relu the last layer
         return z
 
     
@@ -545,7 +559,7 @@ class ForwardNet(nn.Module):
        
 
 class PiecewiseForwardNet(nn.Module):
-    def __init__(self, encoder, enc_dim, act_dim, k):
+    def __init__(self, encoder, enc_dim, act_dim, k, fit_reward=False,mu=0, r_encoder = None, alpha=1):
         super(PiecewiseForwardNet, self).__init__()
         self.encoder = encoder
         self.act_dim = act_dim
@@ -556,9 +570,16 @@ class PiecewiseForwardNet(nn.Module):
         self.Alist = nn.ModuleList([nn.Linear(enc_dim,enc_dim,bias=False) for i in range(k-1)])
         self.Blist = nn.ModuleList([nn.Linear(act_dim,enc_dim,bias=False) for i in range(k-1)])
         self.C = nn.Linear(enc_dim,k) # used to decide which linear model is active
+        self.fit_reward = fit_reward
+        self.mu = mu
+        self.alpha = alpha
+        self.r_encoder = r_encoder
     
     def forward_loss(self,batch):
-        X1, X0, U = batch
+        if self.fit_reward:
+            X1, X0, U, R = batch
+        else:
+            X1, X0, U = batch
         X1 = self.encoder(X1)
         X0 = self.encoder(X0)
         inds = torch.argmax(self.C(X0),axis=1)
@@ -571,9 +592,21 @@ class PiecewiseForwardNet(nn.Module):
             class_inds = inds==i+1
             if True in class_inds:
                 pred = self.Alist[i](X0[class_inds]) + self.Blist[i](U[class_inds])
-                loss += ((X1[class_inds] - pred)**2).sum()
+                loss += self.alpha*((X1[class_inds] - pred)**2).sum()
+        if self.fit_reward:
+            #https://pytorch.org/docs/stable/generated/torch.cat.html
+            #print([X0,X1,U])
+            #X0, X1 have already been encoded, as above
+            #print([X0,X1,U])
+            r_input = torch.cat([X0,X1,U], dim=1)
+            #np.concatenate([X0,X1,U], axis=0)
+            #print("r_input", r_input)
+            pred_rs = self.r_encoder(r_input)
+            R = R[:,None]
+            #print("Rs",R,pred_rs)
+            loss += self.mu*((R - pred_rs)**2).sum()
         return loss/(self.enc_dim*X1.shape[0])
-                
+    
 
 class PredictorNet(nn.Module):
     """
