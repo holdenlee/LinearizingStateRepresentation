@@ -10,4 +10,5 @@ Running remotely:
 ```
 sshm
 cd python/LinearizingStateRepresentation/
+jupyter notebook --no-browser
 ```
