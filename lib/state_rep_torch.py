@@ -587,7 +587,7 @@ class PiecewiseForwardNet(nn.Module):
         class_inds = inds==0
         if True in class_inds:
             pred = self.A0(X0[class_inds]) + torch.matmul(U[class_inds],self.B0)
-            loss += ((X1[class_inds] - pred)**2).sum()
+            loss += self.alpha*((X1[class_inds] - pred)**2).sum()
         for i in range(self.k-1):
             class_inds = inds==i+1
             if True in class_inds:
