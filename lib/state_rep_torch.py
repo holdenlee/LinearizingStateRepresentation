@@ -32,6 +32,9 @@ def sample_hopper_action_batch(batch_size):
 def sample_cheetah_action_batch(batch_size):
     return np.random.uniform(low=-1,high=1,size=(batch_size,6))
 
+def sample_pendulum_action_batch_zero(batch_size):
+    return np.zeros((batch_size,1))
+
 def sample_pendulum_action_batch(batch_size):
     """
     Generate a batch of valid random actions for pybullet pendulum.
@@ -463,6 +466,18 @@ class EncoderNet(nn.Module):
             z = F.relu(layer(z))
         z = self.layers[-1](z) #do not relu the last layer
         return z
+    
+class SoftmaxNet(nn.Module):
+    def __init__(self, widths):
+        super(SoftmaxNet, self).__init__()
+        self.layers = nn.ModuleList([nn.Linear(widths[i],widths[i+1]) for i in range(len(widths)-1)])
+        
+    def forward(self, x):
+        z = x
+        for layer in self.layers[:-1]:
+            z = F.relu(layer(z))
+        z = nn.Softmax(dim=-1)(self.layers[-1](z))
+        return z
 
     
 class ConvEncoderNet(nn.Module):
@@ -606,7 +621,96 @@ class PiecewiseForwardNet(nn.Module):
             #print("Rs",R,pred_rs)
             loss += self.mu*((R - pred_rs)**2).sum()
         return loss/(self.enc_dim*X1.shape[0])
+
+class MixtureForwardNet(nn.Module):
+    def __init__(self, encoder, enc_dim, act_dim, k, mixer, fit_reward=False,mu=0, r_encoder = None, alpha=1, mean_coeff=0,covar_coeff=0):
+        super(MixtureForwardNet, self).__init__()
+        self.encoder = encoder
+        self.act_dim = act_dim
+        self.enc_dim = enc_dim
+        self.k = k
+        self.Alist = nn.ModuleList([nn.Linear(enc_dim,enc_dim,bias=False) for i in range(k)])
+        self.Blist = nn.ModuleList([nn.Linear(act_dim,enc_dim,bias=False) for i in range(k)])
+        self.mixer = mixer
+        self.fit_reward = fit_reward
+        self.mu = mu
+        self.alpha = alpha
+        self.r_encoder = r_encoder
+        self.covar_coeff=covar_coeff
+        self.mean_coeff=mean_coeff
     
+    def forward_loss(self,batch):
+        if self.fit_reward:
+            X1, X0, U, R = batch
+        else:
+            X1, X0, U = batch
+        X1 = self.encoder(X1)
+        X0 = self.encoder(X0)
+        batch_size = X0.shape[0]
+        # batch * k
+        coeffs = self.mixer(X0)
+        #print(coeffs)
+        # batch * k * dim
+        outputs = torch.cat([(A(X0)+B(U))[:,None,:] for (A,B) in zip(self.Alist,self.Blist)],dim=1)
+        # batch * dim
+        #print(coeffs.shape, outputs.shape)
+        pred = torch.matmul(coeffs, outputs)
+        loss = 0
+        mean_loss = (torch.mean(X0,0)**2).sum()
+        covar_loss = ((torch.matmul(X0.T, X0)/batch_size - torch.eye(self.enc_dim))**2).sum()
+        loss += self.alpha*((X1 - pred)**2).sum()
+        if self.fit_reward:
+            r_input = torch.cat([X0,X1,U], dim=1)
+            pred_rs = self.r_encoder(r_input)
+            R = R[:,None]
+            loss += self.mu*((R - pred_rs)**2).sum()
+        loss /= batch_size #(self.enc_dim*batch_size)
+        loss += self.mean_coeff * mean_loss + self.covar_coeff * covar_loss
+        return loss
+    
+class MixtureBNForwardNet(nn.Module):
+    def __init__(self, encoder, enc_dim, act_dim, k, mixer, fit_reward=False,mu=0, r_encoder = None, alpha=1):
+        super(MixtureBNForwardNet, self).__init__()
+        self.encoder = encoder
+        self.act_dim = act_dim
+        self.enc_dim = enc_dim
+        self.k = k
+        self.Alist = nn.ModuleList([nn.Linear(enc_dim,enc_dim,bias=False) for i in range(k)])
+        self.Blist = nn.ModuleList([nn.Linear(act_dim,enc_dim,bias=False) for i in range(k)])
+        self.mixer = mixer
+        self.fit_reward = fit_reward
+        self.mu = mu
+        self.alpha = alpha
+        self.r_encoder = r_encoder
+        self.bn1 = nn.BatchNorm1d(enc_dim)
+        self.bn2 = nn.BatchNorm1d(enc_dim)
+    
+    def forward_loss(self,batch):
+        if self.fit_reward:
+            X1, X0, U, R = batch
+        else:
+            X1, X0, U = batch
+        X1 = self.bn1(self.encoder(X1))
+        X0 = self.bn2(self.encoder(X0))
+        # is it ok for these two bn layers to be shared?
+        batch_size = X0.shape[0]
+        # batch * k
+        coeffs = self.mixer(X0)
+        #print(coeffs)
+        # batch * k * dim
+        outputs = torch.cat([(A(X0)+B(U))[:,None,:] for (A,B) in zip(self.Alist,self.Blist)],dim=1)
+        # batch * dim
+        #print(coeffs.shape, outputs.shape)
+        pred = torch.matmul(coeffs, outputs)
+        loss = 0
+        loss += self.alpha*((X1 - pred)**2).sum()
+        if self.fit_reward:
+            r_input = torch.cat([X0,X1,U], dim=1)
+            pred_rs = self.r_encoder(r_input)
+            R = R[:,None]
+            loss += self.mu*((R - pred_rs)**2).sum()
+        loss /= batch_size #(self.enc_dim*batch_size)
+        return loss
 
 class PredictorNet(nn.Module):
     """

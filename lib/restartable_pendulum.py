@@ -105,7 +105,6 @@ class RestartablePendulumEnv(gym.Env):
         if self.pixels:
             return self._get_pixels()
         else: 
-            assert False
             theta, thetadot = self.state
             return np.array([np.cos(theta), np.sin(theta), thetadot])
                                      
