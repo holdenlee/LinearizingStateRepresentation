@@ -569,7 +569,9 @@ class ForwardNet(nn.Module):
         X1, X0, U = batch
         X1 = self.encoder(X1)
         X0 = self.encoder(X0)
+        #print(U.shape, self.B.shape, torch.matmul(U,self.B).shape)
         state_pred = self.A(X0) + torch.matmul(U,self.B)
+        #print(state_pred.shape)
         return (((X1-state_pred)**2).sum()/self.enc_dim)/X1.shape[0]
        
 
@@ -623,7 +625,7 @@ class PiecewiseForwardNet(nn.Module):
         return loss/(self.enc_dim*X1.shape[0])
 
 class MixtureForwardNet(nn.Module):
-    def __init__(self, encoder, enc_dim, act_dim, k, mixer, fit_reward=False,mu=0, r_encoder = None, alpha=1, mean_coeff=0,covar_coeff=0):
+    def __init__(self, encoder, enc_dim, act_dim, k, mixer, fit_reward=False,mu=0, r_encoder = None, alpha=1, mean_coeff=0,covar_coeff=0,normalize=False):
         super(MixtureForwardNet, self).__init__()
         self.encoder = encoder
         self.act_dim = act_dim
@@ -638,6 +640,7 @@ class MixtureForwardNet(nn.Module):
         self.r_encoder = r_encoder
         self.covar_coeff=covar_coeff
         self.mean_coeff=mean_coeff
+        self.normalize = normalize
     
     def forward_loss(self,batch):
         if self.fit_reward:
@@ -654,11 +657,20 @@ class MixtureForwardNet(nn.Module):
         outputs = torch.cat([(A(X0)+B(U))[:,None,:] for (A,B) in zip(self.Alist,self.Blist)],dim=1)
         # batch * dim
         #print(coeffs.shape, outputs.shape)
-        pred = torch.matmul(coeffs, outputs)
+        #outputs = outputs[:,:,None]
+        coeffs = coeffs[:,None,:]
+        #print(coeffs.shape, outputs.shape)
+        pred = torch.matmul(coeffs, outputs)[:,0,:]
         loss = 0
         mean_loss = (torch.mean(X0,0)**2).sum()
         covar_loss = ((torch.matmul(X0.T, X0)/batch_size - torch.eye(self.enc_dim))**2).sum()
-        loss += self.alpha*((X1 - pred)**2).sum()
+        if self.normalize:
+            norm_factor = (torch.inverse(torch.matmul(X0.T, X0)/batch_size))
+            unnorm_err = X1-pred 
+            #print(X1.shape, pred.shape, unnorm_err.shape, norm_factor.shape)
+            loss += self.alpha*(torch.mm(torch.mm(unnorm_err,norm_factor), unnorm_err.T)).sum()    
+        else:
+            loss += self.alpha*((X1 - pred)**2).sum()
         if self.fit_reward:
             r_input = torch.cat([X0,X1,U], dim=1)
             pred_rs = self.r_encoder(r_input)
