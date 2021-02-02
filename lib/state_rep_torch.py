@@ -553,7 +553,7 @@ class ForwardInverseNet(nn.Module):
         return (((U-act_pred)**2).sum()/self.act_dim)/X1.shape[0]
 
 class ForwardNet(nn.Module):
-    def __init__(self,encoder,enc_dim, act_dim):
+    def __init__(self,encoder,enc_dim, act_dim, mean_coeff=0,covar_coeff=0):
 
         super(ForwardNet, self).__init__()
         self.encoder = encoder
@@ -561,6 +561,8 @@ class ForwardNet(nn.Module):
         self.enc_dim = enc_dim
         self.A = nn.Linear(enc_dim,enc_dim,bias=False) # drift matrix, maps state to state
         self.B = torch.eye(enc_dim)[:act_dim,:]
+        self.covar_coeff=covar_coeff
+        self.mean_coeff=mean_coeff
         
     def forward_loss(self,batch):
         """
@@ -569,10 +571,17 @@ class ForwardNet(nn.Module):
         X1, X0, U = batch
         X1 = self.encoder(X1)
         X0 = self.encoder(X0)
+        batch_size = X0.shape[0]
         #print(U.shape, self.B.shape, torch.matmul(U,self.B).shape)
         state_pred = self.A(X0) + torch.matmul(U,self.B)
         #print(state_pred.shape)
-        return (((X1-state_pred)**2).sum()/self.enc_dim)/X1.shape[0]
+        #Note: difference with MixtureForwardNet: there is extra self.enc_dim normalization factor here
+        loss = (((X1-state_pred)**2).sum()/self.enc_dim)/batch_size
+        if self.mean_coeff!=0 or self.covar_coeff!=0:
+            mean_loss = (torch.mean(X0,0)**2).sum()
+            covar_loss = ((torch.matmul(X0.T, X0)/batch_size - torch.eye(self.enc_dim))**2).sum()
+            loss += self.mean_coeff * mean_loss + self.covar_coeff * covar_loss
+        return loss
        
 
 class PiecewiseForwardNet(nn.Module):
