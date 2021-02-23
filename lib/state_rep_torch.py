@@ -6,6 +6,7 @@ import torch.optim as optim
 from matplotlib import pyplot as plt
 import gym
 from scipy import linalg as la
+from torch.distributions import normal
 
 # format a batch as a list of states (each entry of list is shape (batch_size, state_size), corresponding to x0, x1,...)
 # and list of actions (each entry of shape (batch_size, action_size), u0,u1,...)
@@ -553,7 +554,7 @@ class ForwardInverseNet(nn.Module):
         return (((U-act_pred)**2).sum()/self.act_dim)/X1.shape[0]
 
 class ForwardNet(nn.Module):
-    def __init__(self,encoder,enc_dim, act_dim, mean_coeff=0,covar_coeff=0):
+    def __init__(self,encoder,enc_dim, act_dim, alpha=1.0, mean_coeff=0,covar_coeff=0):
 
         super(ForwardNet, self).__init__()
         self.encoder = encoder
@@ -561,6 +562,7 @@ class ForwardNet(nn.Module):
         self.enc_dim = enc_dim
         self.A = nn.Linear(enc_dim,enc_dim,bias=False) # drift matrix, maps state to state
         self.B = torch.eye(enc_dim)[:act_dim,:]
+        self.alpha=alpha
         self.covar_coeff=covar_coeff
         self.mean_coeff=mean_coeff
         
@@ -576,7 +578,7 @@ class ForwardNet(nn.Module):
         state_pred = self.A(X0) + torch.matmul(U,self.B)
         #print(state_pred.shape)
         #Note: difference with MixtureForwardNet: there is extra self.enc_dim normalization factor here
-        loss = (((X1-state_pred)**2).sum()/self.enc_dim)/batch_size
+        loss = self.alpha*(((X1-state_pred)**2).sum()/self.enc_dim)/batch_size
         if self.mean_coeff!=0 or self.covar_coeff!=0:
             mean_loss = (torch.mean(X0,0)**2).sum()
             covar_loss = ((torch.matmul(X0.T, X0)/batch_size - torch.eye(self.enc_dim))**2).sum()
@@ -634,12 +636,13 @@ class PiecewiseForwardNet(nn.Module):
         return loss/(self.enc_dim*X1.shape[0])
 
 class MixtureForwardNet(nn.Module):
-    def __init__(self, encoder, enc_dim, act_dim, k, mixer, fit_reward=False,mu=0, r_encoder = None, alpha=1, mean_coeff=0,covar_coeff=0,normalize=False):
+    def __init__(self, encoder, enc_dim, act_dim, k, mixer, fit_reward=False,mu=0, r_encoder = None, alpha=1, mean_coeff=0,covar_coeff=0,normalize=False,random_inputs=False, random_inputs_weight=0.0, proj_coeff=0.0):
         super(MixtureForwardNet, self).__init__()
         self.encoder = encoder
         self.act_dim = act_dim
         self.enc_dim = enc_dim
         self.k = k
+        #should we allow bias here?
         self.Alist = nn.ModuleList([nn.Linear(enc_dim,enc_dim,bias=False) for i in range(k)])
         self.Blist = nn.ModuleList([nn.Linear(act_dim,enc_dim,bias=False) for i in range(k)])
         self.mixer = mixer
@@ -650,6 +653,10 @@ class MixtureForwardNet(nn.Module):
         self.covar_coeff=covar_coeff
         self.mean_coeff=mean_coeff
         self.normalize = normalize
+        self.random_inputs =True
+        self.linear_on_random = nn.Linear(enc_dim, enc_dim, bias=False)
+        self.random_inputs_weight = random_inputs_weight
+        self.proj_coeff = proj_coeff
     
     def forward_loss(self,batch):
         if self.fit_reward:
@@ -659,11 +666,18 @@ class MixtureForwardNet(nn.Module):
         X1 = self.encoder(X1)
         X0 = self.encoder(X0)
         batch_size = X0.shape[0]
+        if self.random_inputs:
+            # add random inputs here
+            m = normal.Normal(0.0,1.0)
+            s0 = m.sample([batch_size, self.enc_dim])
+            s1 = m.sample([batch_size, self.enc_dim])
+            X0 = X0 + self.random_inputs_weight*self.linear_on_random(s0)
+            X1 = X1 + self.random_inputs_weight*self.linear_on_random(s1)
         # batch * k
         coeffs = self.mixer(X0)
         #print(coeffs)
         # batch * k * dim
-        outputs = torch.cat([(A(X0)+B(U))[:,None,:] for (A,B) in zip(self.Alist,self.Blist)],dim=1)
+        outputs = torch.cat([(A(X0)+B(U))[:,None,:] for (A,B) in zip(self.Alist,self.Blist)], dim=1)
         # batch * dim
         #print(coeffs.shape, outputs.shape)
         #outputs = outputs[:,:,None]
@@ -671,8 +685,9 @@ class MixtureForwardNet(nn.Module):
         #print(coeffs.shape, outputs.shape)
         pred = torch.matmul(coeffs, outputs)[:,0,:]
         loss = 0
+        samp_covar = torch.matmul(X0.T, X0)/batch_size
         mean_loss = (torch.mean(X0,0)**2).sum()
-        covar_loss = ((torch.matmul(X0.T, X0)/batch_size - torch.eye(self.enc_dim))**2).sum()
+        covar_loss = ((samp_covar - torch.eye(self.enc_dim))**2).sum()
         if self.normalize:
             norm_factor = (torch.inverse(torch.matmul(X0.T, X0)/batch_size))
             unnorm_err = X1-pred 
@@ -687,6 +702,9 @@ class MixtureForwardNet(nn.Module):
             loss += self.mu*((R - pred_rs)**2).sum()
         loss /= batch_size #(self.enc_dim*batch_size)
         loss += self.mean_coeff * mean_loss + self.covar_coeff * covar_loss
+        if self.proj_coeff != 0:
+            loss += self.proj_coeff * ((torch.mm(samp_covar,samp_covar) - samp_covar)**2).sum()
+            #add error - not being projection
         return loss
     
 class MixtureBNForwardNet(nn.Module):
